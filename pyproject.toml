@@ -1,0 +1,7 @@
+[project]
+name = "monitorudp"
+version = "0.1.0"
+description = "Monitors UDP traffic of VoIP devices via SNMP"
+readme = "README.md"
+requires-python = ">=3.6"
+dependencies = []
