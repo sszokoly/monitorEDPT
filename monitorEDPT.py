@@ -40,8 +40,11 @@ OIDS = (
 
 RatePair = Tuple[str, str]
 CounterPair = Tuple[int, int]
+Baseline = Tuple[int, int, float]
 Row = Tuple[str, str, str, str, str, str, str, str, str, str, str]
 Poller = Callable[[str, str, float], Awaitable[Optional["RawPhoneObservation"]]]
+
+COLUMN_WIDTHS = (8, 7, 15, 5, 6, 6, 6, 4, 3, 15, 5)
 
 
 class RawPhoneObservation:
@@ -187,7 +190,7 @@ async def poll_endpoint(
 
 
 def _has_media(observation: RawPhoneObservation) -> bool:
-    return all(
+    return observation.udp_out_datagrams not in (None, 0) and all(
         value is not None and value.strip()
         for value in (
             observation.local_audio_port,
@@ -200,8 +203,8 @@ def _has_media(observation: RawPhoneObservation) -> bool:
 
 def update_rates(
     observation: RawPhoneObservation,
-    baselines: Dict[str, CounterPair],
-    interval: float,
+    baselines: Dict[str, Baseline],
+    now: Optional[float] = None,
 ) -> RatePair:
     if (
         observation.udp_in_datagrams is None
@@ -212,29 +215,33 @@ def update_rates(
         observation.udp_in_datagrams,
         observation.udp_out_datagrams,
     )
+    if now is None:
+        now = time.monotonic()
     previous = baselines.get(observation.target)
-    baselines[observation.target] = current
+    baselines[observation.target] = current + (now,)
     if (
         previous is None
         or current[0] < previous[0]
         or current[1] < previous[1]
     ):
         return "-", "-"
-    udp_in_rate = max(0, current[0] - previous[0] - 1) / interval
-    udp_out_rate = max(0, current[1] - previous[1] - 1) / interval
+    elapsed = now - previous[2]
+    if elapsed <= 0:
+        return "-", "-"
+    udp_in_rate = max(0, current[0] - previous[0] - 1) / elapsed
+    udp_out_rate = max(0, current[1] - previous[1] - 1) / elapsed
     return _format_rate(udp_out_rate), _format_rate(udp_in_rate)
 
 
 def _format_rate(rate: float) -> str:
-    if rate == int(rate):
-        return "{0}pps".format(int(rate))
-    return "{0:.1f}pps".format(rate)
+    return "{0}pps".format(int(round(rate)))
 
 
 def _color_rate(rate: str) -> str:
-    if not rate.endswith("pps"):
+    visible = rate.rstrip()
+    if not visible.endswith("pps"):
         return rate
-    value = float(rate[:-3])
+    value = float(visible[:-3])
     if value < 1:
         return BRIGHT_RED + rate + RESET
     if value < 45:
@@ -245,23 +252,25 @@ def _color_rate(rate: str) -> str:
 def collect_rows(
     targets: Sequence[str],
     observations: Sequence[Optional[RawPhoneObservation]],
-    baselines: Dict[str, CounterPair],
-    interval: float,
+    baselines: Dict[str, Baseline],
+    now: Optional[float] = None,
 ) -> List[Row]:
     rows = []  # type: List[Row]
     for target, observation in zip(targets, observations):
         if observation is None:
             continue
-        udp_out, udp_in = update_rates(observation, baselines, interval)
+        udp_out, udp_in = update_rates(observation, baselines, now)
         if not _has_media(observation):
+            continue
+        if udp_out == "-" or udp_in == "-":
             continue
         rows.append((
             time.strftime("%H:%M:%S"),
             observation.sip_user_id or "",
             target,
             observation.local_audio_port or "",
-            _color_rate(udp_out),
-            _color_rate(udp_in),
+            udp_out,
+            udp_in,
             observation.codec_rx or "",
             observation.tmsec or "",
             observation.lnq or "",
@@ -282,14 +291,25 @@ def print_rows(
         output = sys.stdout
     if printed_before:
         print("---", file=output)
-    print(
-        "time\text\tlocalIP\tlport\tudpOut\tudpIn\tcodec\ttmsec\tlnq"
-        "\tremoteIP\trport",
-        file=output,
+    headers = (
+        "time", "ext", "localIP", "lport", "udpOut", "udpIn", "codec",
+        "tmsec", "lnq", "remoteIP", "rport",
     )
+    print(_format_row(headers), file=output)
     for row in rows:
-        print("\t".join(row), file=output)
+        print(_format_row(row), file=output)
     return True
+
+
+def _format_row(row: Sequence[str]) -> str:
+    cells = []  # type: List[str]
+    for index, value in enumerate(row):
+        padded = value.ljust(COLUMN_WIDTHS[index])
+        if index in (4, 5):
+            cells.append(_color_rate(padded))
+        else:
+            cells.append(padded)
+    return " ".join(cells)
 
 
 async def collect_batch(
@@ -309,20 +329,22 @@ async def monitor(
     timeout: float,
     output: Optional[TextIO] = None,
 ) -> None:
-    baselines = {}  # type: Dict[str, CounterPair]
+    baselines = {}  # type: Dict[str, Baseline]
     printed_before = False
     while True:
-        started = time.monotonic()
         results = await collect_batch(targets, community, timeout)
         observations = [
             result if isinstance(result, RawPhoneObservation) else None
             for result in results
         ]
-        rows = collect_rows(targets, observations, baselines, interval)
+        rows = collect_rows(
+            targets,
+            observations,
+            baselines,
+            time.monotonic(),
+        )
         printed_before = print_rows(rows, printed_before, output)
-        remaining = interval - (time.monotonic() - started)
-        if remaining > 0:
-            await asyncio.sleep(remaining)
+        await asyncio.sleep(interval)
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
