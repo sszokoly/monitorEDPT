@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Print synchronized Avaya endpoint UDP and media summaries via SNMP v2c."""
+"""
+Description: Monitors Avaya phones UDP traffic via SNMP.
+Author: Sabi Szokoly
+Contact: https://github.com/sszokoly
+Version: 0.1.0
+"""
 
 import argparse
 import asyncio
 import sys
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
+from typing import Awaitable, Callable, Dict, List, Mapping, Optional
 from typing import Sequence, TextIO, Tuple, Union
 
 
 COMMUNITY = "public"
 DEFAULT_INTERVAL = 5.0
 DEFAULT_TIMEOUT = 3.0
+MAX_ACCEPTABLE_PACKET_LOSS_PERCENT = 10
+FALLBACK_EXPECTED_PPS = 50.0
 BRIGHT_RED = "\033[91m"
 BRIGHT_YELLOW = "\033[93m"
 RESET = "\033[0m"
@@ -41,10 +48,10 @@ OIDS = (
 RatePair = Tuple[str, str]
 CounterPair = Tuple[int, int]
 Baseline = Tuple[int, int, float]
-Row = Tuple[str, str, str, str, str, str, str, str, str, str, str]
+Row = Tuple[str, str, str, str, str, str, str, str, str, str, str, float, float]
 Poller = Callable[[str, str, float], Awaitable[Optional["RawPhoneObservation"]]]
 
-COLUMN_WIDTHS = (8, 7, 15, 5, 6, 6, 6, 4, 3, 15, 5)
+COLUMN_WIDTHS = (8, 7, 15, 5, 6, 6, 6, 5, 3, 15, 5)
 
 
 class RawPhoneObservation:
@@ -237,14 +244,24 @@ def _format_rate(rate: float) -> str:
     return "{0}pps".format(int(round(rate)))
 
 
-def _color_rate(rate: str) -> str:
+def rate_thresholds(tmsec_value: Optional[str]) -> Tuple[float, float]:
+    packetization = _integer(tmsec_value)
+    if packetization is not None and packetization > 0:
+        expected = 1000.0 / packetization
+    else:
+        expected = FALLBACK_EXPECTED_PPS
+    loss = expected * (100 - MAX_ACCEPTABLE_PACKET_LOSS_PERCENT) / 100
+    return expected, loss
+
+
+def _color_rate(rate: str, expected: float, loss: float) -> str:
     visible = rate.rstrip()
     if not visible.endswith("pps"):
         return rate
     value = float(visible[:-3])
     if value < 1:
         return BRIGHT_RED + rate + RESET
-    if value < 45:
+    if value <= loss:
         return BRIGHT_YELLOW + rate + RESET
     return rate
 
@@ -254,6 +271,7 @@ def collect_rows(
     observations: Sequence[Optional[RawPhoneObservation]],
     baselines: Dict[str, Baseline],
     now: Optional[float] = None,
+    bad_only: bool = False,
 ) -> List[Row]:
     rows = []  # type: List[Row]
     for target, observation in zip(targets, observations):
@@ -263,6 +281,10 @@ def collect_rows(
         if not _has_media(observation):
             continue
         if udp_out == "-" or udp_in == "-":
+            continue
+        expected, loss = rate_thresholds(observation.tmsec)
+        inbound = float(udp_in[:-3])
+        if bad_only and inbound > loss:
             continue
         rows.append((
             time.strftime("%H:%M:%S"),
@@ -276,6 +298,8 @@ def collect_rows(
             observation.lnq or "",
             observation.far_end_ip or "",
             observation.far_end_port or "",
+            expected,
+            loss,
         ))
     return rows
 
@@ -295,18 +319,28 @@ def print_rows(
         "time", "ext", "localIP", "lport", "udpOut", "udpIn", "codec",
         "tmsec", "lnq", "remoteIP", "rport",
     )
-    print(_format_row(headers), file=output)
+    print(_format_header(headers), file=output)
     for row in rows:
         print(_format_row(row), file=output)
     return True
 
 
-def _format_row(row: Sequence[str]) -> str:
+def _format_header(row: Tuple[str, ...]) -> str:
+    return " ".join(
+        value.ljust(COLUMN_WIDTHS[index])
+        for index, value in enumerate(row)
+    )
+
+
+def _format_row(row: Row) -> str:
     cells = []  # type: List[str]
-    for index, value in enumerate(row):
+    expected = row[11]
+    loss = row[12]
+    values = row[:11]
+    for index, value in enumerate(values):
         padded = value.ljust(COLUMN_WIDTHS[index])
         if index in (4, 5):
-            cells.append(_color_rate(padded))
+            cells.append(_color_rate(padded, expected, loss))
         else:
             cells.append(padded)
     return " ".join(cells)
@@ -328,6 +362,7 @@ async def monitor(
     interval: float,
     timeout: float,
     output: Optional[TextIO] = None,
+    bad_only: bool = False,
 ) -> None:
     baselines = {}  # type: Dict[str, Baseline]
     printed_before = False
@@ -342,6 +377,7 @@ async def monitor(
             observations,
             baselines,
             time.monotonic(),
+            bad_only,
         )
         printed_before = print_rows(rows, printed_before, output)
         await asyncio.sleep(interval)
@@ -349,13 +385,13 @@ async def monitor(
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Poll Avaya endpoint UDP traffic via SNMP v2c.",
+        description="Monitors Avaya phones UDP traffic via SNMP."
     )
     parser.add_argument(
         "targets",
         nargs="+",
         metavar="IP",
-        help="endpoint IP address",
+        help="endpoint IP address(es)",
     )
     parser.add_argument(
         "-c",
@@ -375,6 +411,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=DEFAULT_TIMEOUT,
         help="per-endpoint timeout in seconds (default: 3)",
     )
+    parser.add_argument(
+        "--bad-only",
+        action="store_true",
+        help="show only calls at or below the inbound loss threshold",
+    )
     args = parser.parse_args(argv)
     if args.interval < DEFAULT_INTERVAL:
         parser.error("--interval must be at least 5 seconds")
@@ -393,6 +434,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             args.community,
             args.interval,
             args.timeout,
+            bad_only=args.bad_only,
         ),
         loop=loop,
     )

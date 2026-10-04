@@ -23,6 +23,8 @@ Options:
   and cannot be lower than five seconds.
 - `--timeout`: per-endpoint `asyncio.wait_for` deadline in seconds. Defaults
   to `3`.
+- `--bad-only`: show only valid calls whose inbound PPS is at or below the
+  packetization-aware loss threshold.
 
 All endpoint requests in a batch start concurrently. The script waits for all
 results or timeouts before printing a fixed-width table, then waits the full
@@ -32,3 +34,10 @@ zero, divided by the elapsed monotonic time between successful observations,
 then rounded to the nearest integer using Python's standard `round()` behavior.
 The first successful sample and a counter reset display `-` because no
 comparable prior counter is available.
+
+`MAX_ACCEPTABLE_PACKET_LOSS_PERCENT` is a script-level percentage set to `10`.
+The expected packet rate is calculated from TMSEC: 20 ms packetization expects
+50 PPS and flags inbound rates at or below 45 PPS; 30 ms packetization expects
+about 33.3 PPS and flags inbound rates at or below 30 PPS. The same threshold
+controls ANSI rate colors and `--bad-only` output. Calls with no outbound UDP
+traffic are not considered active and are not printed.
