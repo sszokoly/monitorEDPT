@@ -1,5 +1,5 @@
 [project]
-name = "monitorudp"
+name = "monitoredpt"
 version = "0.1.0"
 description = "Monitors UDP traffic of VoIP devices via SNMP"
 readme = "README.md"
