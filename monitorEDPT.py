@@ -197,13 +197,17 @@ async def poll_endpoint(
 
 
 def _has_media(observation: RawPhoneObservation) -> bool:
-    return observation.udp_out_datagrams not in (None, 0) and all(
+    return (
+        observation.udp_out_datagrams not in (None, 0)
+        and _integer(observation.lnq) not in (None, 0)
+        and all(
         value is not None and value.strip()
         for value in (
             observation.local_audio_port,
             observation.far_end_ip,
             observation.far_end_port,
             observation.codec_rx,
+        )
         )
     )
 
