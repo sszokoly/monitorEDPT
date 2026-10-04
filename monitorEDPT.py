@@ -48,7 +48,9 @@ OIDS = (
 RatePair = Tuple[str, str]
 CounterPair = Tuple[int, int]
 Baseline = Tuple[int, int, float]
-Row = Tuple[str, str, str, str, str, str, str, str, str, str, str, float, float]
+Row = Tuple[
+    str, str, str, str, str, str, str, str, str, str, str, float, float, int,
+]
 Poller = Callable[[str, str, float], Awaitable[Optional["RawPhoneObservation"]]]
 
 COLUMN_WIDTHS = (8, 7, 15, 5, 6, 6, 6, 5, 3, 15, 5)
@@ -258,9 +260,11 @@ def rate_thresholds(tmsec_value: Optional[str]) -> Tuple[float, float]:
     return expected, loss
 
 
-def _color_rate(rate: str, expected: float, loss: float) -> str:
+def _color_rate(rate: str, expected: float, loss: float, lnq_value: int) -> str:
     visible = rate.rstrip()
     if not visible.endswith("pps"):
+        return rate
+    if lnq_value >= 6:
         return rate
     value = float(visible[:-3])
     if value < 1:
@@ -287,6 +291,9 @@ def collect_rows(
         if udp_out == "-" or udp_in == "-":
             continue
         expected, loss = rate_thresholds(observation.tmsec)
+        lnq_value = _integer(observation.lnq)
+        if lnq_value is None:
+            continue
         inbound = float(udp_in[:-3])
         if bad_only and inbound > loss:
             continue
@@ -304,6 +311,7 @@ def collect_rows(
             observation.far_end_port or "",
             expected,
             loss,
+            lnq_value,
         ))
     return rows
 
@@ -340,11 +348,12 @@ def _format_row(row: Row) -> str:
     cells = []  # type: List[str]
     expected = row[11]
     loss = row[12]
+    lnq_value = row[13]
     values = row[:11]
     for index, value in enumerate(values):
         padded = value.ljust(COLUMN_WIDTHS[index])
         if index in (4, 5):
-            cells.append(_color_rate(padded, expected, loss))
+            cells.append(_color_rate(padded, expected, loss, lnq_value))
         else:
             cells.append(padded)
     return " ".join(cells)

@@ -41,4 +41,5 @@ The expected packet rate is calculated from TMSEC: 20 ms packetization expects
 about 33.3 PPS and flags inbound rates at or below 30 PPS. The same threshold
 controls ANSI rate colors and `--bad-only` output. Calls with no outbound UDP
 traffic or an LNQ value of zero are treated as inactive or partial intervals
-and are not printed.
+and are not printed. Valid rows with LNQ 6 are uncolored because they are
+partial observations; ANSI rate coloring applies only when LNQ is from 1 to 5.
