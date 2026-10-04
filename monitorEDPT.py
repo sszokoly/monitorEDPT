@@ -295,7 +295,7 @@ def collect_rows(
         if lnq_value is None:
             continue
         inbound = float(udp_in[:-3])
-        if bad_only and inbound > loss:
+        if bad_only and (lnq_value >= 6 or inbound > loss):
             continue
         rows.append((
             time.strftime("%H:%M:%S"),
